@@ -3,6 +3,7 @@
  */
 
 import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaDoubleRDD;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -73,13 +74,17 @@ public class Main implements Serializable{
             JavaRDD<Rating> validationRDD = splitRDD[1].cache();
             JavaRDD<Rating> testingRDD = splitRDD[2].cache();
             m.train(trainingRDD);
+            m.validateResults(validationRDD);
         }
 
         List<Rating> recommendations = m.getRecommendations(user_ID, ratingsRDD, movieIdList);
 
         System.out.println("Recomendation" + recommendations.size());
         System.out.println("List" + recommendations);
-        System.out.println("List" + productList.get(recommendations.get(0).product()));
+        System.out.println("MovieName : " + productList.get(recommendations.get(0).product()));
+
+        Rating[] recommendedRatingArray = model.recommendProducts(user_ID, 5);
+        System.out.println("MovieName : " + productList.get(recommendedRatingArray[0].product()));
     }
 
     public  List<Rating> getRecommendations(final int userId, JavaRDD<Rating>
@@ -149,7 +154,7 @@ public class Main implements Serializable{
     }
 
     public void train(JavaRDD<Rating> trainingRDD) {
-        model = ALS.train(JavaRDD.toRDD(trainingRDD), 20, 10, 0.01);
+        model = ALS.train(JavaRDD.toRDD(trainingRDD), 20, 20, 0.01);
         //RDD<Tuple2<Object, double[]>> features = model.productFeatures();
         System.out.println("Saving model");
         File file = new File("/Users/ankitdevani/Downloads/model");
@@ -164,6 +169,49 @@ public class Main implements Serializable{
         model.save(sc.sc(), "/Users/ankitdevani/Downloads/model");
     }
 
+    public void validateResults(JavaRDD<Rating> validatingRDD) {
+
+        JavaRDD<Tuple2<Object, Object>> userProducts = validatingRDD.map(
+                new Function<Rating, Tuple2<Object, Object>>() {
+                    public Tuple2<Object, Object> call(Rating r) {
+                        return new Tuple2<Object, Object>(r.user(), r.product());
+                    }
+                }
+        );
+
+        JavaPairRDD<Tuple2<Integer, Integer>, Double> predictions = JavaPairRDD.fromJavaRDD(
+                model.predict(JavaRDD.toRDD(userProducts)).toJavaRDD().map(
+                        new Function<Rating, Tuple2<Tuple2<Integer, Integer>, Double>>() {
+                            public Tuple2<Tuple2<Integer, Integer>, Double> call(Rating r){
+                                return new Tuple2<Tuple2<Integer, Integer>, Double>(
+                                        new Tuple2<Integer, Integer>(r.user(), r.product()), r.rating());
+                            }
+                        }
+                ));
+
+        JavaRDD<Tuple2<Double, Double>> ratesAndPreds =
+                JavaPairRDD.fromJavaRDD(validatingRDD.map(
+                        new Function<Rating, Tuple2<Tuple2<Integer, Integer>, Double>>() {
+                            public Tuple2<Tuple2<Integer, Integer>, Double> call(Rating r){
+                                return new Tuple2<Tuple2<Integer, Integer>, Double>(
+                                        new Tuple2<Integer, Integer>(r.user(), r.product()), r.rating());
+                            }
+                        }
+                )).join(predictions).values();
+
+        double MSE = JavaDoubleRDD.fromRDD(ratesAndPreds.map(
+                new Function<Tuple2<Double, Double>, Object>() {
+                    public Object call(Tuple2<Double, Double> pair) {
+                        Double err = pair._1() - pair._2();
+                        return err * err;
+                    }
+                }
+        ).rdd()).mean();
+        System.out.println("Mean Squared Error = " + MSE);
+
+        System.out.println(ratesAndPreds.take(3));
+    }
+
     public static void delete(File file)
             throws IOException {
 
@@ -171,16 +219,12 @@ public class Main implements Serializable{
 
             //directory is empty, then delete it
             if(file.list().length==0){
-
                 file.delete();
                 System.out.println("Directory is deleted : "
                         + file.getAbsolutePath());
-
-            }else{
-
+            } else{
                 //list all the directory contents
                 String files[] = file.list();
-
                 for (String temp : files) {
                     //construct the file structure
                     File fileDelete = new File(file, temp);
@@ -197,7 +241,7 @@ public class Main implements Serializable{
                 }
             }
 
-        }else{
+        } else{
             //if file, then delete it
             file.delete();
             System.out.println("File is deleted : " + file.getAbsolutePath());
